@@ -1,4 +1,4 @@
-package rul.templatemod;
+package com.example;
 
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
@@ -11,7 +11,7 @@ import net.minecraft.util.Hand;
 import com.mojang.brigadier.arguments.BoolArgumentType;
 import com.mojang.brigadier.arguments.DoubleArgumentType;
 
-public class TemplateMod implements ClientModInitializer {
+public class ExampleMod implements ClientModInitializer {
     public static boolean enabled = false;
     public static double range = 3.0;
     private static int jumpCooldown = 0;
