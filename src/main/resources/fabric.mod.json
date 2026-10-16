@@ -4,14 +4,14 @@
   "version": "1.0.0",
   "name": "Vulkan Triggerbot",
   "description": "A GUI-less triggerbot for VulkanMod users.",
-  "authors": ["You"],
+  "authors": [
+    "You"
+  ],
   "license": "MIT",
   "environment": "client",
   "entrypoints": {
-  "client": [
-    "com.example.ExampleMod"
-  ]
-},
+    "client": [
+      "com.example.ExampleMod"
     ]
   },
   "depends": {
