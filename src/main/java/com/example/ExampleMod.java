@@ -16,7 +16,12 @@ import com.mojang.brigadier.arguments.DoubleArgumentType;
 public class ExampleMod implements ClientModInitializer {
     public static boolean enabled = false;
     public static double range = 3.0;
-    public static float aimSpeed = 0.15f; // Lower = smoother, higher = snappier
+    public static float aimSpeed = 0.15f;
+
+    // Jump/crit state machine
+    private static int jumpCooldown = 0;
+    private static boolean waitingToAttack = false;
+    private static int attackDelay = 0;
 
     @Override
     public void onInitializeClient() {
@@ -41,18 +46,18 @@ public class ExampleMod implements ClientModInitializer {
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (!enabled || client.player == null || client.world == null || client.interactionManager == null) return;
 
-            // Find the best target within 120 degrees FOV
+            if (jumpCooldown > 0) jumpCooldown--;
+            if (attackDelay > 0) attackDelay--;
+
+            // Find target within 120 degree FOV
             PlayerEntity target = null;
-            double closestAngle = 60.0; // 60 degrees off-center = 120 degree total cone
+            double closestAngle = 60.0;
 
             for (PlayerEntity player : client.world.getPlayers()) {
                 if (player == client.player || !player.isAlive()) continue;
-                
-                // Check distance
                 double distance = client.player.distanceTo(player);
                 if (distance > range) continue;
 
-                // Check FOV (120 degrees total)
                 Vec3d lookVec = client.player.getRotationVec(1.0f);
                 Vec3d targetVec = new Vec3d(
                     player.getX() - client.player.getX(),
@@ -61,7 +66,7 @@ public class ExampleMod implements ClientModInitializer {
                 ).normalize();
 
                 double dot = lookVec.dotProduct(targetVec);
-                double angle = Math.toDegrees(Math.acos(dot));
+                double angle = Math.toDegrees(Math.acos(Math.max(-1.0, Math.min(1.0, dot))));
 
                 if (angle < closestAngle) {
                     closestAngle = angle;
@@ -69,55 +74,61 @@ public class ExampleMod implements ClientModInitializer {
                 }
             }
 
-            if (target != null) {
-                // --- SMOOTH AIM LOGIC ---
-                double dx = target.getX() - client.player.getX();
-                double dy = (target.getY() + target.getStandingEyeHeight()) - (client.player.getY() + client.player.getStandingEyeHeight());
-                double dz = target.getZ() - client.player.getZ();
-                double distanceXZ = Math.sqrt(dx * dx + dz * dz);
+            if (target == null) return;
 
-                float targetYaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90.0F;
-                float targetPitch = (float) -Math.toDegrees(Math.atan2(dy, distanceXZ));
+            // --- SMOOTH AIM ---
+            double dx = target.getX() - client.player.getX();
+            double dy = (target.getY() + target.getStandingEyeHeight()) - (client.player.getY() + client.player.getStandingEyeHeight());
+            double dz = target.getZ() - client.player.getZ();
+            double distanceXZ = Math.sqrt(dx * dx + dz * dz);
 
-                // Smoothly interpolate yaw and pitch
-                float currentYaw = client.player.getYaw();
-                float currentPitch = client.player.getPitch();
+            float targetYaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90.0F;
+            float targetPitch = (float) -Math.toDegrees(Math.atan2(dy, distanceXZ));
 
-                // Normalize yaw difference to -180 to 180
-                float yawDiff = targetYaw - currentYaw;
-                while (yawDiff > 180) yawDiff -= 360;
-                while (yawDiff < -180) yawDiff += 360;
+            float currentYaw = client.player.getYaw();
+            float currentPitch = client.player.getPitch();
 
-                client.player.setYaw(currentYaw + yawDiff * aimSpeed);
-                client.player.setPitch(currentPitch + (targetPitch - currentPitch) * aimSpeed);
+            float yawDiff = targetYaw - currentYaw;
+            while (yawDiff > 180) yawDiff -= 360;
+            while (yawDiff < -180) yawDiff += 360;
 
-                // --- PACKET CRIT LOGIC ---
-                // Only attack if cooldown is ready
-                if (client.player.getAttackCooldownProgress(0.0f) == 1.0f) {
-                    
-                    // Send a fake packet that simulates a tiny fall (forces crit)
-                    // This is what Wurst/Meteor do in their "Packet" crit mode
-                    double x = client.player.getX();
-                    double y = client.player.getY();
-                    double z = client.player.getZ();
-                    
-                    // Send position with onGround=false to trick the server
-                    client.player.networkHandler.sendPacket(
-                        new PlayerMoveC2SPacket.PositionAndOnGround(x, y + 0.0625D, z, false)
-                    );
-                    client.player.networkHandler.sendPacket(
-                        new PlayerMoveC2SPacket.PositionAndOnGround(x, y, z, false)
-                    );
-                    client.player.networkHandler.sendPacket(
-                        new PlayerMoveC2SPacket.PositionAndOnGround(x, y + 1.1E-5D, z, false)
-                    );
-                    client.player.networkHandler.sendPacket(
-                        new PlayerMoveC2SPacket.PositionAndOnGround(x, y, z, false)
-                    );
+            client.player.setYaw(currentYaw + yawDiff * aimSpeed);
+            client.player.setPitch(currentPitch + (targetPitch - currentPitch) * aimSpeed);
 
-                    // Now attack (server thinks we're falling = crit)
-                    client.interactionManager.attackEntity(client.player, target);
-                    client.player.swingHand(Hand.MAIN_HAND);
+            // --- JUMP + CRIT STATE MACHINE ---
+            boolean cooldownReady = client.player.getAttackCooldownProgress(0.0f) >= 0.95f;
+
+            if (!waitingToAttack) {
+                // We're on the ground, need to jump to start a crit
+                if (client.player.isOnGround() && jumpCooldown == 0 && cooldownReady) {
+                    client.player.jump();
+                    jumpCooldown = 12;          // ~0.6s between jumps
+                    waitingToAttack = true;     // Now wait until we're falling
+                }
+            } else {
+                // We're in the air. Check if we're falling (past the apex).
+                if (client.player.getVelocity().y < 0 && !client.player.isOnGround()) {
+                    // We're falling — this is a real crit moment server-side.
+                    if (cooldownReady && attackDelay == 0) {
+                        // Send a "sync" packet to make sure the server sees our falling state
+                        client.player.networkHandler.sendPacket(
+                            new PlayerMoveC2SPacket.PositionAndOnGround(
+                                client.player.getX(),
+                                client.player.getY(),
+                                client.player.getZ(),
+                                false
+                            )
+                        );
+
+                        client.interactionManager.attackEntity(client.player, target);
+                        client.player.swingHand(Hand.MAIN_HAND);
+
+                        waitingToAttack = false; // Reset for next cycle
+                        attackDelay = 2;         // tiny buffer before next cycle
+                    }
+                } else if (client.player.isOnGround()) {
+                    // We landed without attacking (missed the window) — reset and try again
+                    waitingToAttack = false;
                 }
             }
         });
