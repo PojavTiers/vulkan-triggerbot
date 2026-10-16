@@ -8,8 +8,10 @@
   "license": "MIT",
   "environment": "client",
   "entrypoints": {
-    "client": [
-      "rul.templatemod.TemplateMod"
+  "client": [
+    "com.example.ExampleMod"
+  ]
+},
     ]
   },
   "depends": {
